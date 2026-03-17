@@ -193,6 +193,188 @@ def search_code(
 
 
 @mcp.tool()
+def explain_architecture(
+    root_path: str,
+    feature: str,
+    top_k: int = 10,
+    max_depth: int = 2,
+) -> Dict[str, Any]:
+    """
+    Объясняет архитектуру фичи или потока данных в проекте.
+
+    Алгоритм:
+    1. Семантический поиск: находит top_k чанков, релевантных запросу
+    2. Граф зависимостей: для каждого найденного класса собирает
+       входящие и исходящие связи (кто вызывает и кого использует)
+    3. Формирует текстовое описание потока: слои Controller → Service → Repository
+
+    Аргументы:
+    - root_path: путь к корню проекта
+    - feature: описание фичи на естественном языке (например, "как работают скидки")
+    - top_k: число чанков для начального поиска
+    - max_depth: глубина обхода графа зависимостей
+
+    Возвращает:
+    - flow_text: готовый текст с описанием архитектуры (для вставки в LLM-промпт)
+    - layers: классы сгруппированные по архитектурным слоям
+    - call_chain: цепочки вызовов между найденными классами
+    - chunks: сырые чанки для контекста
+    """
+    index = _get_index_or_raise(root_path)
+    g = index.graph
+
+    # 1. Семантический поиск
+    results = project_query(index, query_text=feature, top_k=top_k)
+
+    # Собираем уникальные классы из результатов
+    found_classes: Dict[str, Dict] = {}  # simple_name -> info
+    found_chunks: List[Dict] = []
+
+    for r in results:
+        ch = index.chunks.get(r.chunk_id)
+        if not ch:
+            continue
+        cls = ch.metadata.get("class", "")
+        method = ch.metadata.get("name", "")
+        if not cls:
+            continue
+
+        if cls not in found_classes:
+            found_classes[cls] = {
+                "class": cls,
+                "file": str(ch.file),
+                "methods": [],
+                "score": r.score,
+            }
+        if method and method not in found_classes[cls]["methods"]:
+            found_classes[cls]["methods"].append(method)
+
+        found_chunks.append({
+            "score": round(r.score, 3),
+            "class": cls,
+            "method": method,
+            "location": f"{ch.file}:{ch.start_line}-{ch.end_line}",
+            "snippet": ch.text[:150].strip(),
+        })
+
+    # 2. Граф: для каждого найденного класса — связи
+    call_chain: List[Dict] = []
+    for fqcn, _ in _resolve_fqcns(index, list(found_classes.keys())):
+        for edge in g.outgoing(fqcn)[:max_depth * 5]:
+            target_simple = edge.target.split(".")[-1].split("#")[0]
+            if target_simple in found_classes or target_simple in _ALL_SIMPLE(index):
+                call_chain.append({
+                    "from": fqcn.split(".")[-1],
+                    "to": edge.target.split(".")[-1],
+                    "kind": edge.kind,
+                })
+
+    # 3. Разбивка по слоям
+    layers = _classify_layers(found_classes)
+
+    # 4. Текстовое описание потока
+    flow_text = _build_flow_text(feature, layers, call_chain, found_chunks)
+
+    return {
+        "flow_text": flow_text,
+        "layers": layers,
+        "call_chain": call_chain[:30],
+        "chunks": found_chunks,
+    }
+
+
+def _resolve_fqcns(index: IndexedProject, simple_names: List[str]):
+    """Возвращает (fqcn, simple) для классов из графа по простому имени."""
+    result = []
+    all_nodes = set(index.graph._outgoing.keys()) | set(index.graph._incoming.keys())
+    for simple in simple_names:
+        for node in all_nodes:
+            node_simple = node.split(".")[-1].split("#")[0]
+            if node_simple == simple and "#" not in node:
+                result.append((node, simple))
+                break
+    return result
+
+
+def _ALL_SIMPLE(index: IndexedProject):
+    """Простые имена всех классов в индексе."""
+    return {ch.metadata.get("class", "") for ch in index.chunks.values()}
+
+
+# Слои по суффиксу имени класса
+_LAYER_PATTERNS = [
+    ("controller", ["Controller"]),
+    ("service", ["Service"]),
+    ("repository", ["Repository"]),
+    ("model", ["Entity", "Model"]),
+    ("dto", ["Dto", "Request", "Response"]),
+    ("exception", ["Exception"]),
+    ("config", ["Config", "Configuration", "Handler"]),
+]
+
+
+def _classify_layers(classes: Dict[str, Dict]) -> Dict[str, List[str]]:
+    layers: Dict[str, List[str]] = {layer: [] for layer, _ in _LAYER_PATTERNS}
+    layers["other"] = []
+    for cls_name in classes:
+        matched = False
+        for layer, suffixes in _LAYER_PATTERNS:
+            if any(cls_name.endswith(s) for s in suffixes):
+                layers[layer].append(cls_name)
+                matched = True
+                break
+        if not matched:
+            layers["other"].append(cls_name)
+    return {k: v for k, v in layers.items() if v}  # убираем пустые
+
+
+def _build_flow_text(
+    feature: str,
+    layers: Dict[str, List],
+    call_chain: List[Dict],
+    chunks: List[Dict],
+) -> str:
+    lines = [
+        f"# Архитектура: {feature}",
+        "",
+        "## Задействованные компоненты",
+    ]
+
+    layer_labels = {
+        "controller": "Контроллеры (HTTP)",
+        "service": "Сервисы (бизнес-логика)",
+        "repository": "Репозитории (доступ к данным)",
+        "model": "Модели/Сущности",
+        "dto": "DTO (запросы/ответы)",
+        "exception": "Исключения",
+        "config": "Конфигурация",
+        "other": "Прочее",
+    }
+    for layer, classes in layers.items():
+        label = layer_labels.get(layer, layer)
+        lines.append(f"\n### {label}")
+        for cls in classes:
+            lines.append(f"- {cls}")
+
+    if call_chain:
+        lines.append("\n## Цепочки вызовов")
+        seen = set()
+        for edge in call_chain:
+            key = f"{edge['from']} → {edge['to']}"
+            if key not in seen:
+                seen.add(key)
+                lines.append(f"- {key}  [{edge['kind']}]")
+
+    lines.append("\n## Ключевые методы")
+    top_chunks = sorted(chunks, key=lambda x: -x["score"])[:6]
+    for ch in top_chunks:
+        lines.append(f"\n### {ch['class']}.{ch['method']}  (score: {ch['score']})")
+        lines.append(f"```java\n{ch['snippet']}\n```")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def find_usages(
     root_path: str,
     class_name: str,
@@ -370,6 +552,10 @@ def mcp_find_usages(root_path: str, class_name: str, method_name: Optional[str] 
     return find_usages(root_path, class_name, method_name, include_semantic, limit)
 
 
+def mcp_explain_architecture(root_path: str, feature: str, top_k: int = 10, max_depth: int = 2) -> Dict[str, Any]:
+    return explain_architecture(root_path, feature, top_k, max_depth)
+
+
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 
 
@@ -388,4 +574,5 @@ __all__ = [
     "mcp_search_code",
     "mcp_analyze_impact",
     "mcp_find_usages",
+    "mcp_explain_architecture",
 ]
