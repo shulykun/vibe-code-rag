@@ -83,8 +83,8 @@ class GigaChatEmbeddingsClient:
 
     # ── Embeddings ───────────────────────────────────────────────────────────
 
-    def embed_texts(self, texts: Sequence[str], batch_size: int = 10,
-                    max_chars_per_batch: int = 30_000) -> List[Vector]:
+    def embed_texts(self, texts: Sequence[str], batch_size: int = 5,
+                    max_chars_per_batch: int = 10_000) -> List[Vector]:
         """
         Получает эмбеддинги батчами с ограничением по числу символов.
 

@@ -50,10 +50,20 @@ class IndexedProject:
         return Retriever(self.store)
 
 
+def _local_embed(text: str) -> Vector:
+    """Детерминированный локальный эмбеддинг (fallback без API)."""
+    import hashlib
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:4], "big", signed=False)
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal(EMBEDDING_DIM)
+    return vec / (np.linalg.norm(vec) + 1e-8)
+
+
 def _embed_texts(texts: Sequence[str], client: GigaChatEmbeddingsClient | None = None) -> List[Vector]:
     """
-    Пытается получить эмбеддинги через GigaChat API (если задан GIGACHAT_AUTH_KEY).
-    При отсутствии ключа/ошибке — fallback на локальный детерминированный эмбеддер.
+    Получает эмбеддинги через GigaChat API батчами.
+    Каждый батч, на который API вернул ошибку, переходит на локальный fallback.
     """
     if client is None:
         try:
@@ -61,27 +71,35 @@ def _embed_texts(texts: Sequence[str], client: GigaChatEmbeddingsClient | None =
         except Exception:
             client = None
 
-    if client is not None:
-        try:
-            vectors = client.embed_texts(texts)
-            if len(vectors) == len(texts):
-                return vectors
-        except Exception:
-            # fallback на локальный режим
-            pass
+    if client is None:
+        return [_local_embed(t) for t in texts]
 
-    # локальный fallback: детерминированный эмбеддер
-    vectors: List[Vector] = []
-    for t in texts:
-        # Python hash() не стабилен между запусками процесса.
-        # Для воспроизводимости (и тестов) используем стабильный sha256 -> 32-bit seed.
-        digest = hashlib.sha256(t.encode("utf-8")).digest()
-        seed = int.from_bytes(digest[:4], "big", signed=False)
-        rng = np.random.default_rng(seed)
-        vec = rng.standard_normal(EMBEDDING_DIM)
-        vec = vec / (np.linalg.norm(vec) + 1e-8)
-        vectors.append(vec)
-    return vectors
+    # Батчинг: для каждого батча пробуем API, при ошибке — fallback только для него
+    texts_list = list(texts)
+    all_vectors: List[Vector] = []
+    i = 0
+    batch_size = 3
+    max_chars = 5_000
+
+    while i < len(texts_list):
+        batch: List[str] = []
+        chars = 0
+        while i < len(texts_list) and len(batch) < batch_size:
+            t = texts_list[i]
+            if batch and chars + len(t) > max_chars:
+                break
+            batch.append(t)
+            chars += len(t)
+            i += 1
+
+        try:
+            vecs = client._embed_batch(batch)
+            all_vectors.extend(vecs)
+        except Exception:
+            # fallback только для этого батча
+            all_vectors.extend(_local_embed(t) for t in batch)
+
+    return all_vectors
 
 
 def index_project(root: Path, store: EmbeddingStore | None = None) -> IndexedProject:
@@ -135,7 +153,7 @@ def index_project(root: Path, store: EmbeddingStore | None = None) -> IndexedPro
 
             for ch in file_chunks:
                 chunks[ch.id] = ch
-                texts_for_embedding.append(ch.text)
+                texts_for_embedding.append(ch.embed_text or ch.text)
                 chunk_ids.append(ch.id)
                 payloads.append(
                     {

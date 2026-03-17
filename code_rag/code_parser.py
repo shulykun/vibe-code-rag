@@ -20,8 +20,9 @@ from tree_sitter_languages import get_language
 @dataclass
 class ParsedFile:
     path: Path
-    tree: Any  # tree_sitter.Tree
-    source: str
+    tree: Any        # tree_sitter.Tree
+    source: str      # decoded text (для отображения)
+    source_bytes: bytes = b""  # raw bytes (для байтовых смещений tree-sitter)
 
 
 class CodeParser:
@@ -40,15 +41,13 @@ class CodeParser:
 
         Реальный парсинг через tree-sitter.
         """
-        source = path.read_text(encoding="utf-8")
-        tree = self._parse_source(source)
-        return ParsedFile(path=path, tree=tree, source=source)
+        source_bytes = path.read_bytes()
+        source = source_bytes.decode("utf-8", errors="replace")
+        tree = self._parser.parse(source_bytes)
+        return ParsedFile(path=path, tree=tree, source=source, source_bytes=source_bytes)
 
-    def _parse_source(self, source: str) -> Any:
-        """
-        Парсит исходник и возвращает дерево tree-sitter.
-        """
-        # tree-sitter ожидает bytes
+    def parse_source(self, source: str) -> Any:
+        """Парсит строку и возвращает дерево tree-sitter."""
         return self._parser.parse(source.encode("utf-8"))
 
 
