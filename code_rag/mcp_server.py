@@ -193,6 +193,122 @@ def search_code(
 
 
 @mcp.tool()
+def find_usages(
+    root_path: str,
+    class_name: str,
+    method_name: Optional[str] = None,
+    include_semantic: bool = True,
+    limit: int = 30,
+) -> Dict[str, Any]:
+    """
+    Находит все места в проекте, где используется указанный класс или метод.
+
+    Комбинирует два источника:
+    1. Граф зависимостей (статический анализ вызовов и импортов)
+    2. Семантический поиск по чанкам (находит упоминания даже без явного импорта)
+
+    Аргументы:
+    - root_path: путь к корню проекта
+    - class_name: FQCN класса, например com.bikerental.service.DiscountService
+    - method_name: имя метода (опционально), например isDiscountApplicable
+    - include_semantic: добавить семантический поиск поверх графа (по умолчанию true)
+    - limit: максимальное число результатов в каждом источнике
+
+    Возвращает:
+    - graph_usages: прямые вхождения из графа зависимостей
+    - semantic_usages: результаты семантического поиска
+    - summary: краткая сводка
+    """
+    index = _get_index_or_raise(root_path)
+    g = index.graph
+
+    target = f"{class_name}#{method_name}" if method_name else class_name
+    simple_name = class_name.split(".")[-1]
+
+    # -- 1. Граф: прямые входящие рёбра --
+    incoming = g.incoming(target)
+
+    # Если метод не найден напрямую — ищем по короткому имени
+    if not incoming and method_name:
+        # Перебираем все узлы графа с совпадающим суффиксом
+        for node in list(index.graph._incoming.keys()):
+            if node.endswith(f"#{method_name}") and simple_name in node:
+                incoming = g.incoming(node)
+                target = node
+                break
+
+    graph_results: List[Dict[str, Any]] = []
+    seen_sources: set = set()
+    for edge in incoming[:limit]:
+        if edge.source in seen_sources:
+            continue
+        seen_sources.add(edge.source)
+
+        # Находим чанк для этого источника
+        chunk_info = _find_chunk_by_fqcn(index, edge.source)
+        graph_results.append({
+            "caller": edge.source,
+            "kind": edge.kind,
+            "location": chunk_info.get("location"),
+            "snippet": chunk_info.get("snippet"),
+        })
+
+    # -- 2. Семантический поиск --
+    semantic_results: List[Dict[str, Any]] = []
+    if include_semantic:
+        query = f"{simple_name} {method_name or ''} usage call".strip()
+        from .indexer import project_query
+        sem_hits = project_query(index, query_text=query, top_k=limit)
+        for hit in sem_hits:
+            ch = index.chunks.get(hit.chunk_id)
+            if ch is None:
+                continue
+            # Исключаем сам класс из результатов
+            if simple_name in str(ch.file) and not method_name:
+                continue
+            semantic_results.append({
+                "score": round(hit.score, 4),
+                "class": ch.metadata.get("class", ""),
+                "method": ch.metadata.get("name", ""),
+                "location": f"{ch.file}:{ch.start_line}-{ch.end_line}",
+                "snippet": ch.text[:120].strip(),
+            })
+
+    # -- 3. Сводка --
+    unique_callers = {r["caller"].split("#")[0] for r in graph_results}
+    summary = {
+        "target": target,
+        "graph_usages_count": len(graph_results),
+        "semantic_usages_count": len(semantic_results),
+        "unique_calling_classes": sorted(unique_callers),
+    }
+
+    return {
+        "summary": summary,
+        "graph_usages": graph_results,
+        "semantic_usages": semantic_results[:limit],
+    }
+
+
+def _find_chunk_by_fqcn(index, fqcn: str) -> Dict[str, Any]:
+    """Ищет чанк по FQCN вида com.example.Class или com.example.Class#method."""
+    parts = fqcn.split("#")
+    class_fqcn = parts[0]
+    method = parts[1] if len(parts) > 1 else None
+    simple = class_fqcn.split(".")[-1]
+
+    for ch in index.chunks.values():
+        meta = ch.metadata or {}
+        if meta.get("class") == simple:
+            if method is None or meta.get("name") == method:
+                return {
+                    "location": f"{ch.file}:{ch.start_line}-{ch.end_line}",
+                    "snippet": ch.text[:120].strip(),
+                }
+    return {}
+
+
+@mcp.tool()
 def analyze_impact(
     root_path: str,
     class_name: str,
@@ -250,6 +366,10 @@ def mcp_analyze_impact(root_path: str, class_name: str, method_name: Optional[st
     return analyze_impact(root_path, class_name, method_name, max_depth, limit)
 
 
+def mcp_find_usages(root_path: str, class_name: str, method_name: Optional[str] = None, include_semantic: bool = True, limit: int = 30) -> Dict[str, Any]:
+    return find_usages(root_path, class_name, method_name, include_semantic, limit)
+
+
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 
 
@@ -267,4 +387,5 @@ __all__ = [
     "mcp_project_query",
     "mcp_search_code",
     "mcp_analyze_impact",
+    "mcp_find_usages",
 ]
