@@ -83,16 +83,46 @@ class GigaChatEmbeddingsClient:
 
     # ── Embeddings ───────────────────────────────────────────────────────────
 
-    def embed_texts(self, texts: Sequence[str]) -> List[Vector]:
+    def embed_texts(self, texts: Sequence[str], batch_size: int = 10,
+                    max_chars_per_batch: int = 30_000) -> List[Vector]:
+        """
+        Получает эмбеддинги батчами с ограничением по числу символов.
+
+        GigaChat ограничивает размер запроса — при длинных чанках даже батч из 5 текстов
+        может превысить лимит. Батч разбивается так чтобы суммарный размер
+        не превышал max_chars_per_batch символов.
+        """
         if not texts:
             return []
 
+        all_vectors: List[Vector] = []
+        texts_list = list(texts)
+        i = 0
+
+        while i < len(texts_list):
+            batch: List[str] = []
+            chars = 0
+            while i < len(texts_list) and len(batch) < batch_size:
+                t = texts_list[i]
+                if batch and chars + len(t) > max_chars_per_batch:
+                    break
+                batch.append(t)
+                chars += len(t)
+                i += 1
+
+            vectors = self._embed_batch(batch)
+            all_vectors.extend(vectors)
+            log.debug("Embedded batch of %d texts (%d chars)", len(batch), chars)
+
+        return all_vectors
+
+    def _embed_batch(self, texts: List[str]) -> List[Vector]:
         token = self._ensure_token()
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
         }
-        payload = {"model": EMBEDDINGS_MODEL, "input": list(texts)}
+        payload = {"model": EMBEDDINGS_MODEL, "input": texts}
 
         with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
             resp = client.post(EMBEDDINGS_URL, json=payload, headers=headers)
@@ -103,7 +133,9 @@ class GigaChatEmbeddingsClient:
         for item in data.get("data") or []:
             emb = item.get("embedding")
             if emb is not None:
-                vectors.append(np.array(emb, dtype=np.float32))
+                v = np.array(emb, dtype=np.float32)
+                v = v / (np.linalg.norm(v) + 1e-8)  # L2-нормализация
+                vectors.append(v)
 
         if len(vectors) != len(texts):
             raise RuntimeError(
