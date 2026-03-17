@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 """
-Локальный индексатор Java-проекта (MVP, in-memory).
+Локальный индексатор Java-проекта.
 
 Использует:
 - ProjectScanner — для структуры модулей и файлов;
 - CodeParser + Chunker — для получения чанков;
-- InMemoryEmbeddingStore — для хранения эмбеддингов чанков.
+- PersistentEmbeddingStore — хранит эмбеддинги на диск (~/.code-rag/),
+  InMemoryEmbeddingStore — fallback для тестов.
 
 Эмбеддинги: GigaChat API (если задан GIGACHAT_AUTH_KEY),
 иначе — локальный детерминированный fallback.
@@ -14,8 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import logging
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -23,6 +25,7 @@ from .project_scanner import ProjectScanner, ProjectLayout
 from .code_parser import CodeParser
 from .chunker import Chunk, Chunker
 from .embedding_store import InMemoryEmbeddingStore, Vector, EmbeddingStore
+from .persistent_store import PersistentEmbeddingStore
 from .retriever import Retriever, RetrievalResult
 from .rag_orchestrator import RagOrchestrator, RagContext
 from .embeddings_client import GigaChatEmbeddingsClient
@@ -38,11 +41,14 @@ from .dependency_extractor import (
 EMBEDDING_DIM = 1024  # GigaChat Embeddings dimension
 
 
+log = logging.getLogger(__name__)
+
+
 @dataclass
 class IndexedProject:
     root: Path
     layout: ProjectLayout
-    store: InMemoryEmbeddingStore
+    store: EmbeddingStore
     chunks: Dict[str, Chunk]
     graph: DependencyGraph
 
@@ -102,9 +108,17 @@ def _embed_texts(texts: Sequence[str], client: GigaChatEmbeddingsClient | None =
     return all_vectors
 
 
-def index_project(root: Path, store: EmbeddingStore | None = None) -> IndexedProject:
+def index_project(
+    root: Path,
+    store: EmbeddingStore | None = None,
+    use_cache: bool = True,
+) -> IndexedProject:
     """
     Полный локальный индекс Java-проекта.
+
+    При use_cache=True (по умолчанию) сохраняет эмбеддинги в ~/.code-rag/<hash>/
+    и переиспользует их если исходники не изменились.
+    При use_cache=False или явно переданном store — работает как раньше (in-memory).
 
     Возвращает IndexedProject, с которым можно делать семантические запросы.
     """
@@ -113,14 +127,27 @@ def index_project(root: Path, store: EmbeddingStore | None = None) -> IndexedPro
     scanner = ProjectScanner(root)
     layout = scanner.scan()
 
+    # Список всех java-файлов для хэширования
+    all_java_files: List[Path] = [
+        f for module in layout.modules for f in module.java_sources
+    ]
+
     parser = CodeParser()
     chunker = Chunker()
-    store = store or InMemoryEmbeddingStore()
     graph = DependencyGraph()
 
-    chunks: Dict[str, Chunk] = {}
-    items_to_add = []
+    # Выбираем стор
+    persistent: Optional[PersistentEmbeddingStore] = None
+    if store is not None:
+        # Явно передан стор — используем его (тесты)
+        pass
+    elif use_cache:
+        persistent = PersistentEmbeddingStore(root)
+        store = persistent
+    else:
+        store = InMemoryEmbeddingStore()
 
+    chunks: Dict[str, Chunk] = {}
     texts_for_embedding: List[str] = []
     chunk_ids: List[str] = []
     payloads: List[dict] = []
@@ -142,36 +169,42 @@ def index_project(root: Path, store: EmbeddingStore | None = None) -> IndexedPro
                     for dep in deps:
                         graph.add_edge(current_fqcn, dep, kind="uses")
 
-                    # method call edges (best-effort)
                     calls = extract_method_calls(parsed.tree, parsed.source, symbols)
                     for caller_node, targets in calls.items():
                         for target_node in targets:
                             graph.add_edge(caller_node, target_node, kind="calls")
             except Exception:
-                # граф не должен ломать индексатор
                 pass
 
             for ch in file_chunks:
                 chunks[ch.id] = ch
                 texts_for_embedding.append(ch.embed_text or ch.text)
                 chunk_ids.append(ch.id)
-                payloads.append(
-                    {
-                        "location": f"{ch.file}:{ch.start_line}-{ch.end_line}",
-                        "module": module.module_name,
-                        "kind": ch.kind,
-                    }
-                )
+                payloads.append({
+                    "location": f"{ch.file}:{ch.start_line}-{ch.end_line}",
+                    "module": module.module_name,
+                    "kind": ch.kind,
+                })
 
-    if texts_for_embedding:
-        vectors = _embed_texts(texts_for_embedding)
-        items_to_add = [
-            (cid, vec, payload)
-            for cid, vec, payload in zip(chunk_ids, vectors, payloads)
-        ]
+    # Пробуем загрузить эмбеддинги из кэша
+    cache_hit = False
+    if persistent is not None:
+        cache_hit = persistent.load(all_java_files)
+        if cache_hit:
+            log.info("Using cached embeddings (%d chunks)", len(chunks))
 
-    if items_to_add:
-        store.add(items_to_add)
+    # Если кэш не попал — считаем эмбеддинги и сохраняем
+    if not cache_hit:
+        if texts_for_embedding:
+            vectors = _embed_texts(texts_for_embedding)
+            items_to_add = [
+                (cid, vec, payload)
+                for cid, vec, payload in zip(chunk_ids, vectors, payloads)
+            ]
+            store.add(items_to_add)
+
+        if persistent is not None:
+            persistent.save(all_java_files)
 
     return IndexedProject(root=root, layout=layout, store=store, chunks=chunks, graph=graph)
 
