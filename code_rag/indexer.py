@@ -35,7 +35,7 @@ from .dependency_extractor import (
 )
 
 
-EMBEDDING_DIM = 128
+EMBEDDING_DIM = 1024  # GigaChat Embeddings dimension
 
 
 @dataclass
