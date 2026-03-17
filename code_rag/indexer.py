@@ -13,6 +13,7 @@ from __future__ import annotations
 """
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Sequence
 
@@ -70,10 +71,12 @@ def _embed_texts(texts: Sequence[str], client: EmbeddingsClient | None = None) -
             pass
 
     # локальный fallback: детерминированный эмбеддер
-    rng = np.random.default_rng(42)
     vectors: List[Vector] = []
     for t in texts:
-        seed = abs(hash(t)) % (2**32)
+        # Python hash() не стабилен между запусками процесса.
+        # Для воспроизводимости (и тестов) используем стабильный sha256 -> 32-bit seed.
+        digest = hashlib.sha256(t.encode("utf-8")).digest()
+        seed = int.from_bytes(digest[:4], "big", signed=False)
         rng = np.random.default_rng(seed)
         vec = rng.standard_normal(EMBEDDING_DIM)
         vec = vec / (np.linalg.norm(vec) + 1e-8)

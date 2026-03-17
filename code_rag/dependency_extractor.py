@@ -126,11 +126,13 @@ def extract_method_calls(tree: Any, source: str, symbols: JavaFileSymbols) -> Di
     - "<CurrentFQCN>#method" для неявных вызовов (method()) — считаем, что это вызов внутри класса
     - "<ResolvedType>#method" для вызовов вида Type.method()
 
-    Ограничения:
-    - без типизации объектов (obj.method()) мы не можем резолвить тип receiver-а.
-      Поэтому обрабатываем только:
-      - неявные вызовы method()
-      - статические/квалифицированные вызовы Type.method()
+    Поддерживаем:
+    - неявные вызовы method() — считаем вызовом внутри текущего класса;
+    - Type.method() — резолвим Type через imports/package;
+    - obj.method() — best-effort резолвим тип obj по:
+      - полям класса;
+      - параметрам метода;
+      - локальным переменным (простые объявления).
     """
     root = tree.root_node
     current_type = primary_declared_type(symbols)
@@ -139,6 +141,8 @@ def extract_method_calls(tree: Any, source: str, symbols: JavaFileSymbols) -> Di
         return {}
 
     calls: Dict[str, Set[str]] = {}
+
+    class_fields = _extract_field_types(root, source, symbols)
 
     # В tree-sitter java: method_declaration содержит identifier как имя метода.
     for node in _walk(root):
@@ -153,6 +157,10 @@ def extract_method_calls(tree: Any, source: str, symbols: JavaFileSymbols) -> Di
         caller_node = f"{current_fqcn}#{caller}"
         calls.setdefault(caller_node, set())
 
+        scope_types = dict(class_fields)
+        scope_types.update(_extract_parameter_types(node, source, symbols))
+        scope_types.update(_extract_local_var_types(node, source, symbols))
+
         for inner in _walk(node):
             if inner.type != "method_invocation":
                 continue
@@ -166,6 +174,14 @@ def extract_method_calls(tree: Any, source: str, symbols: JavaFileSymbols) -> Di
                 # likely Type.method() — резолвим Type
                 target_type = _resolve_type(qualifier, symbols)
                 calls[caller_node].add(f"{target_type}#{method_name}")
+            elif qualifier:
+                # obj.method() — пробуем резолвить obj -> Type
+                t = scope_types.get(qualifier)
+                if t:
+                    calls[caller_node].add(f"{t}#{method_name}")
+                else:
+                    # не смогли резолвить — пусть будет внутри класса (лучше чем пропустить)
+                    calls[caller_node].add(f"{current_fqcn}#{method_name}")
             else:
                 # method() — best-effort: вызов внутри класса
                 calls[caller_node].add(f"{current_fqcn}#{method_name}")
@@ -190,6 +206,74 @@ def _method_invocation_qualifier(node: Any, source: str) -> str:
     if len(ids) < 2:
         return ""
     return _node_text(source, ids[0])
+
+
+def _type_text_for_decl(node: Any, source: str) -> str:
+    t = _first_descendant_of_type(node, ("scoped_type_identifier", "type_identifier"))
+    if t is None:
+        return ""
+    return _node_text(source, t)
+
+
+def _extract_field_types(root: Any, source: str, symbols: JavaFileSymbols) -> Dict[str, str]:
+    """
+    Map fieldName -> ResolvedType(FQCN best-effort).
+    """
+    out: Dict[str, str] = {}
+    for n in _walk(root):
+        if n.type != "field_declaration":
+            continue
+        t = _type_text_for_decl(n, source)
+        if not t:
+            continue
+        resolved = _resolve_type(t, symbols)
+
+        # поле(я) — variable_declarator -> identifier
+        for inner in _walk(n):
+            if inner.type == "variable_declarator":
+                ident = _first_descendant_of_type(inner, ("identifier",))
+                if ident is not None:
+                    out[_node_text(source, ident)] = resolved
+    return out
+
+
+def _extract_parameter_types(method_node: Any, source: str, symbols: JavaFileSymbols) -> Dict[str, str]:
+    """
+    Map paramName -> ResolvedType.
+    """
+    out: Dict[str, str] = {}
+    for n in _walk(method_node):
+        if n.type != "formal_parameter":
+            continue
+        t = _type_text_for_decl(n, source)
+        if not t:
+            continue
+        resolved = _resolve_type(t, symbols)
+        ident = _first_descendant_of_type(n, ("identifier",))
+        if ident is not None:
+            out[_node_text(source, ident)] = resolved
+    return out
+
+
+def _extract_local_var_types(method_node: Any, source: str, symbols: JavaFileSymbols) -> Dict[str, str]:
+    """
+    Map localVarName -> ResolvedType.
+    Best-effort только для простых `Type x = ...;`
+    """
+    out: Dict[str, str] = {}
+    for n in _walk(method_node):
+        if n.type != "local_variable_declaration":
+            continue
+        t = _type_text_for_decl(n, source)
+        if not t:
+            continue
+        resolved = _resolve_type(t, symbols)
+        for inner in _walk(n):
+            if inner.type == "variable_declarator":
+                ident = _first_descendant_of_type(inner, ("identifier",))
+                if ident is not None:
+                    out[_node_text(source, ident)] = resolved
+    return out
 
 
 __all__ = [
