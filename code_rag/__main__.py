@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 """
-Простой CLI-энтрипоинт для code_rag.
+CLI-энтрипоинт для code_rag.
 
-Позволяет запускать базовые операции без интеграции MCP:
+Команды:
 - index        — проиндексировать Java-проект;
 - project-query — сделать семантический запрос;
-- search-code  — поиск по коду по подстроке.
+- search-code  — поиск по коду по подстроке;
+- mcp          — запустить MCP-сервер (stdio транспорт).
 
 Примеры:
 
 python -m code_rag index /path/to/java-project
 python -m code_rag project-query /path/to/java-project "user service"
 python -m code_rag search-code /path/to/java-project "@Transactional" --class-filter "*Service"
+python -m code_rag mcp
 """
 
 import argparse
 import json
 from pathlib import Path
 
-from .mcp_server import mcp_index_project, mcp_project_query, mcp_search_code
+from .mcp_server import mcp_index_project, mcp_project_query, mcp_search_code, main as mcp_main
 
 
 def cmd_index(args: argparse.Namespace) -> None:
@@ -90,6 +92,10 @@ def main() -> None:
         help="Max number of results",
     )
     p_sc.set_defaults(func=cmd_search_code)
+
+    # mcp
+    p_mcp = subparsers.add_parser("mcp", help="Run MCP server (stdio transport)")
+    p_mcp.set_defaults(func=lambda _: mcp_main())
 
     args = parser.parse_args()
     args.func(args)
