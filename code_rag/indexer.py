@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 """
-Простой локальный индексатор Java-проекта (MVP, in-memory).
+Локальный индексатор Java-проекта (MVP, in-memory).
 
 Использует:
 - ProjectScanner — для структуры модулей и файлов;
 - CodeParser + Chunker — для получения чанков;
 - InMemoryEmbeddingStore — для хранения эмбеддингов чанков.
 
-Эмбеддинги сейчас фейковые (детерминированные векторы по тексту),
-чтобы можно было быстро обкатать весь пайплайн без внешних сервисов.
+Эмбеддинги: GigaChat API (если задан GIGACHAT_AUTH_KEY),
+иначе — локальный детерминированный fallback.
 """
 
 from dataclasses import dataclass
@@ -25,7 +25,7 @@ from .chunker import Chunk, Chunker
 from .embedding_store import InMemoryEmbeddingStore, Vector, EmbeddingStore
 from .retriever import Retriever, RetrievalResult
 from .rag_orchestrator import RagOrchestrator, RagContext
-from .embeddings_client import EmbeddingsClient
+from .embeddings_client import GigaChatEmbeddingsClient
 from .dependency_graph import DependencyGraph
 from .dependency_extractor import (
     extract_java_symbols,
@@ -50,14 +50,14 @@ class IndexedProject:
         return Retriever(self.store)
 
 
-def _embed_texts(texts: Sequence[str], client: EmbeddingsClient | None = None) -> List[Vector]:
+def _embed_texts(texts: Sequence[str], client: GigaChatEmbeddingsClient | None = None) -> List[Vector]:
     """
-    Пытается получить эмбеддинги из внешнего API.
-    При отсутствии токена/доступа падает обратно на локальный детерминированный эмбеддер.
+    Пытается получить эмбеддинги через GigaChat API (если задан GIGACHAT_AUTH_KEY).
+    При отсутствии ключа/ошибке — fallback на локальный детерминированный эмбеддер.
     """
     if client is None:
         try:
-            client = EmbeddingsClient()
+            client = GigaChatEmbeddingsClient.from_env()
         except Exception:
             client = None
 

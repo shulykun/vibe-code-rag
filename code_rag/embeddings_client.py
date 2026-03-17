@@ -1,92 +1,146 @@
 from __future__ import annotations
 
 """
-Клиент для получения эмбеддингов через внешний API.
+Клиент для получения эмбеддингов через GigaChat API.
 
-Сейчас ориентирован на формат из embeddings_api.md (Gigachat-like):
+Авторизация: OAuth2 (client credentials).
 
-POST https://gigachat.devices.sberbank.ru/api/v1/embeddings
-Headers:
-  Content-Type: application/json
-  Authorization: Bearer <токен доступа>
-Body:
-{
-  "model": "Embeddings",
-  "input": ["text1", "text2", ...]
-}
+Переменные окружения:
+  GIGACHAT_AUTH_KEY   — Authorization key (Basic, base64-строка из личного кабинета)
+  GIGACHAT_SCOPE      — scope (по умолчанию GIGACHAT_API_PERS)
+  GIGACHAT_VERIFY_SSL — "false" чтобы отключить проверку сертификата (самоподписанный)
 
-Фактический URL/модель/токен берутся из окружения, чтобы не хардкодить секреты.
+Пример:
+  export GIGACHAT_AUTH_KEY="OGZiNmQw..."
+  python -m code_rag index /path/to/project
 """
 
 import os
-from dataclasses import dataclass
-from typing import List, Sequence
+import time
+import uuid
+import logging
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence
 
 import httpx
 import numpy as np
 
 from .embedding_store import Vector
 
+log = logging.getLogger(__name__)
 
-DEFAULT_EMBEDDINGS_URL = "https://gigachat.devices.sberbank.ru/api/v1/embeddings"
+OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+EMBEDDINGS_URL = "https://gigachat.devices.sberbank.ru/api/v1/embeddings"
+EMBEDDINGS_MODEL = "Embeddings"
 
 
 @dataclass
-class EmbeddingsConfig:
-    api_url: str
-    api_token: str
-    model: str = "Embeddings"
+class _TokenCache:
+    access_token: str = ""
+    expires_at: float = 0.0  # unix timestamp
 
-    @classmethod
-    def from_env(cls) -> "EmbeddingsConfig":
-        return cls(
-            api_url=os.getenv("CODE_RAG_EMBEDDINGS_URL", DEFAULT_EMBEDDINGS_URL),
-            api_token=os.getenv("CODE_RAG_EMBEDDINGS_TOKEN", ""),
-            model=os.getenv("CODE_RAG_EMBEDDINGS_MODEL", "Embeddings"),
-        )
+    def is_valid(self, margin_sec: float = 60.0) -> bool:
+        return bool(self.access_token) and time.time() < self.expires_at - margin_sec
 
 
-class EmbeddingsClient:
-    def __init__(self, config: EmbeddingsConfig | None = None) -> None:
-        self.config = config or EmbeddingsConfig.from_env()
-        if not self.config.api_token:
-            raise RuntimeError(
-                "Embeddings API token is not set. "
-                "Set CODE_RAG_EMBEDDINGS_TOKEN in environment."
-            )
+@dataclass
+class GigaChatEmbeddingsClient:
+    """
+    Клиент для GigaChat Embeddings с автоматическим обновлением OAuth-токена.
+    """
+
+    auth_key: str  # Basic key из личного кабинета Sber
+    scope: str = "GIGACHAT_API_PERS"
+    verify_ssl: bool = True
+    _token: _TokenCache = field(default_factory=_TokenCache, init=False, repr=False)
+
+    # ── OAuth ────────────────────────────────────────────────────────────────
+
+    def _fetch_token(self) -> None:
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "RqUID": str(uuid.uuid4()),
+            "Authorization": f"Basic {self.auth_key}",
+        }
+        data = {"scope": self.scope}
+
+        with httpx.Client(verify=self.verify_ssl, timeout=15.0) as client:
+            resp = client.post(OAUTH_URL, headers=headers, data=data)
+            resp.raise_for_status()
+            body = resp.json()
+
+        self._token.access_token = body["access_token"]
+        # expires_at приходит в миллисекундах
+        expires_at_ms = body.get("expires_at", 0)
+        self._token.expires_at = expires_at_ms / 1000.0 if expires_at_ms > 1e10 else expires_at_ms
+        log.debug("GigaChat token refreshed, expires_at=%s", self._token.expires_at)
+
+    def _ensure_token(self) -> str:
+        if not self._token.is_valid():
+            self._fetch_token()
+        return self._token.access_token
+
+    # ── Embeddings ───────────────────────────────────────────────────────────
 
     def embed_texts(self, texts: Sequence[str]) -> List[Vector]:
-        """
-        Вызывает внешний API и возвращает список numpy-векторов.
-        """
         if not texts:
             return []
 
-        payload = {
-            "model": self.config.model,
-            "input": list(texts),
-        }
+        token = self._ensure_token()
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_token}",
+            "Authorization": f"Bearer {token}",
         }
+        payload = {"model": EMBEDDINGS_MODEL, "input": list(texts)}
 
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(self.config.api_url, json=payload, headers=headers)
+        with httpx.Client(verify=self.verify_ssl, timeout=30.0) as client:
+            resp = client.post(EMBEDDINGS_URL, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 
-        # Ожидаем, что API вернет список векторов в data["data"][i]["embedding"]
         vectors: List[Vector] = []
-        items = data.get("data") or []
-        for item in items:
+        for item in data.get("data") or []:
             emb = item.get("embedding")
-            if emb is None:
-                continue
-            vectors.append(np.array(emb, dtype=np.float32))
+            if emb is not None:
+                vectors.append(np.array(emb, dtype=np.float32))
 
+        if len(vectors) != len(texts):
+            raise RuntimeError(
+                f"GigaChat returned {len(vectors)} embeddings for {len(texts)} texts"
+            )
         return vectors
 
+    # ── Factory ──────────────────────────────────────────────────────────────
 
-__all__ = ["EmbeddingsClient", "EmbeddingsConfig"]
+    @classmethod
+    def from_env(cls) -> "GigaChatEmbeddingsClient":
+        auth_key = os.getenv("GIGACHAT_AUTH_KEY", "")
+        if not auth_key:
+            raise RuntimeError(
+                "GIGACHAT_AUTH_KEY is not set. "
+                "Get it from https://developers.sber.ru/portal/products/gigachat"
+            )
+        scope = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+        verify_ssl = os.getenv("GIGACHAT_VERIFY_SSL", "true").lower() != "false"
+        return cls(auth_key=auth_key, scope=scope, verify_ssl=verify_ssl)
 
+
+# ── Backward-compat alias (старый код импортировал EmbeddingsClient) ─────────
+
+class EmbeddingsClient(GigaChatEmbeddingsClient):
+    """Alias для обратной совместимости."""
+
+    def __init__(self, config=None) -> None:  # type: ignore[override]
+        if config is not None:
+            # старый путь через EmbeddingsConfig — игнорируем, берём из env
+            pass
+        client = GigaChatEmbeddingsClient.from_env()
+        super().__init__(
+            auth_key=client.auth_key,
+            scope=client.scope,
+            verify_ssl=client.verify_ssl,
+        )
+
+
+__all__ = ["GigaChatEmbeddingsClient", "EmbeddingsClient"]
