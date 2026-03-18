@@ -24,8 +24,11 @@ class JavaFileSymbols:
     declared_types: Set[str]  # simple names
 
 
-def _node_text(source: str, node: Any) -> str:
-    return source[node.start_byte : node.end_byte]
+def _node_text(source, node: Any) -> str:
+    """Извлекает текст узла. source может быть str или bytes."""
+    if isinstance(source, (bytes, bytearray)):
+        return source[node.start_byte: node.end_byte].decode("utf-8", errors="replace")
+    return source[node.start_byte: node.end_byte]
 
 
 def _walk(node: Any) -> Iterable[Any]:
@@ -57,7 +60,9 @@ def extract_java_symbols(tree: Any, source: str) -> JavaFileSymbols:
                 imports[simple] = fqcn
 
         elif node.type in ("class_declaration", "interface_declaration", "enum_declaration"):
-            ident = _first_descendant_of_type(node, ("identifier",))
+            # Ищем identifier прямо среди children (не рекурсивно)
+            # чтобы не захватить имена из аннотаций (@Slf4j, @Service и т.д.)
+            ident = next((c for c in node.children if c.type == "identifier"), None)
             if ident is not None:
                 declared.add(_node_text(source, ident))
 

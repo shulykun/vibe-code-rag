@@ -21,7 +21,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .mcp_server import mcp_index_project, mcp_project_query, mcp_search_code, main as mcp_main
+from .mcp_server import mcp_index_project, mcp_project_query, mcp_search_code, mcp_dependency_tree, main as mcp_main
 
 
 def cmd_index(args: argparse.Namespace) -> None:
@@ -92,6 +92,15 @@ def main() -> None:
         help="Max number of results",
     )
     p_sc.set_defaults(func=cmd_search_code)
+
+    # deps
+    p_deps = subparsers.add_parser("deps", help="Print dependency tree (no embeddings needed)")
+    p_deps.add_argument("root", type=str, help="Path to project root")
+    p_deps.add_argument(
+        "--format", choices=["layered", "full", "mermaid", "all"],
+        default="layered", help="Output format (default: layered)"
+    )
+    p_deps.set_defaults(func=lambda a: print(mcp_dependency_tree(a.root, a.format)["markdown"]))
 
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Run MCP server (stdio transport)")

@@ -193,6 +193,61 @@ def search_code(
 
 
 @mcp.tool()
+def dependency_tree(
+    root_path: str,
+    format: str = "layered",
+) -> Dict[str, Any]:
+    """
+    Строит граф зависимостей Java-проекта без эмбеддингов.
+
+    Работает мгновенно — только статический анализ AST.
+    Фильтрует внешние зависимости (JDK, Spring, Lombok и т.д.).
+
+    Аргументы:
+    - root_path: путь к корню проекта
+    - format: формат вывода:
+        "layered"  — таблица по слоям + потоки (по умолчанию)
+        "full"     — каждый класс со списком зависимостей
+        "mermaid"  — граф в формате Mermaid для GitHub/Obsidian
+        "all"      — все три формата
+
+    Возвращает:
+    - markdown: готовый Markdown текст
+    - stats: статистика (классов, связей, слоёв)
+    """
+    from .dep_graph_renderer import build_project_deps, render_full_tree, render_layered_view, render_mermaid
+
+    root = Path(root_path)
+    deps = build_project_deps(root)
+
+    stats = {
+        "classes": len(deps.classes),
+        "edges": sum(len(v) for v in deps.edges_by_class.values()),
+        "package_prefix": deps.package_prefix,
+        "layers": {k: len(v) for k, v in deps.layers.items()},
+    }
+
+    if format == "full":
+        md = render_full_tree(deps)
+    elif format == "mermaid":
+        md = render_mermaid(deps)
+    elif format == "all":
+        md = "\n\n---\n\n".join([
+            render_layered_view(deps),
+            render_full_tree(deps),
+            render_mermaid(deps),
+        ])
+    else:
+        md = render_layered_view(deps)
+
+    return {"markdown": md, "stats": stats}
+
+
+def mcp_dependency_tree(root_path: str, format: str = "layered") -> Dict[str, Any]:
+    return dependency_tree(root_path, format)
+
+
+@mcp.tool()
 def explain_architecture(
     root_path: str,
     feature: str,
