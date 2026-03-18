@@ -100,9 +100,23 @@ class ProjectScanner:
         if not candidates:
             return [self.root]
 
-        # убираем вложенные модули, оставляя верхнеуровневые
+        unique_candidates = sorted(set(candidates))
+
+        # Если корневой pom.xml есть И модульные — убираем корень
+        # (у него нет своих src/, он просто aggregator)
+        # Оставляем все уровни которые реально содержат src/
+        roots_with_src = [
+            c for c in unique_candidates
+            if (c / "src" / "main" / "java").exists()
+            or (c / "src").exists() and any((c / "src").rglob("*.java"))
+        ]
+
+        if roots_with_src:
+            return roots_with_src
+
+        # fallback — верхнеуровневые
         unique_roots: List[Path] = []
-        for c in sorted(set(candidates)):
+        for c in unique_candidates:
             if not any(parent in unique_roots for parent in c.parents):
                 unique_roots.append(c)
         return unique_roots

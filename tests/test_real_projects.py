@@ -150,3 +150,28 @@ def test_banking_portal_export(tmp_path):
     content = out.read_text()
     assert "AccountController" in content
     assert "Сгенерировано" in content
+
+
+# ── mall (macrozheng) ─────────────────────────────────────────────────────────
+
+@_skip_if_missing("mall")
+def test_mall_multimodule_scan():
+    result = mcp_dependency_tree(str(_project("mall")))
+    assert result["stats"]["classes"] > 200
+    assert result["stats"]["package_prefix"] == "com.macro.mall"
+
+
+@_skip_if_missing("mall")
+def test_mall_layers():
+    result = mcp_dependency_tree(str(_project("mall")))
+    layers = result["stats"]["layers"]
+    assert layers.get("Controller", 0) >= 20
+    assert layers.get("Service", 0) >= 20
+    assert layers.get("Repository", 0) >= 10
+
+
+@_skip_if_missing("mall")
+def test_mall_violations_detected():
+    result = mcp_dependency_tree(str(_project("mall")), format="full")
+    md = result["markdown"]
+    assert "⚠️" in md or result["stats"]["classes"] > 0
