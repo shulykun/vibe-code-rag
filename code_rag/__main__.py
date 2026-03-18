@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 
 from .mcp_server import mcp_index_project, mcp_project_query, mcp_search_code, mcp_dependency_tree, main as mcp_main
+from .dep_graph_renderer import build_project_deps, render_edges_csv, render_edges_json
 
 
 def cmd_index(args: argparse.Namespace) -> None:
@@ -109,13 +110,33 @@ def main() -> None:
         help="Output filename when --export is used"
     )
 
+    p_deps.add_argument(
+        "--edges-csv", type=str, default=None, metavar="FILE",
+        help="Save raw edges to CSV file (e.g. edges.csv)"
+    )
+    p_deps.add_argument(
+        "--edges-json", type=str, default=None, metavar="FILE",
+        help="Save raw edges + classes to JSON file (e.g. edges.json)"
+    )
+
     def cmd_deps(a: argparse.Namespace) -> None:
+        from pathlib import Path as _Path
         result = mcp_dependency_tree(a.root, a.format, export=a.export, output_file=a.output)
         print(result["markdown"])
         s = result["stats"]
         print(f"\n---\n_Классов: {s['classes']} | Связей: {s['edges']} | Пакет: {s['package_prefix']}_")
         if result["exported_to"]:
             print(f"\n✅ Сохранено: {result['exported_to']}")
+
+        # Экспорт сырых связей
+        if a.edges_csv or a.edges_json:
+            deps = build_project_deps(_Path(a.root))
+            if a.edges_csv:
+                _Path(a.edges_csv).write_text(render_edges_csv(deps), encoding="utf-8")
+                print(f"✅ CSV: {a.edges_csv}")
+            if a.edges_json:
+                _Path(a.edges_json).write_text(render_edges_json(deps), encoding="utf-8")
+                print(f"✅ JSON: {a.edges_json}")
 
     p_deps.set_defaults(func=cmd_deps)
 

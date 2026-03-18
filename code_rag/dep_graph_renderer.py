@@ -333,10 +333,92 @@ def render_mermaid(deps: ProjectDeps) -> str:
     return "\n".join(lines)
 
 
+def render_edges_csv(deps: ProjectDeps) -> str:
+    """
+    Экспорт всех связей в CSV.
+
+    Формат:
+      source,target,source_layer,target_layer,kind
+      OrderService,OrderRepository,Service,Repository,uses
+      ...
+    """
+    lines = ["source,target,source_layer,target_layer,kind"]
+    seen: Set[str] = set()
+    for fqcn, edges in deps.edges_by_class.items():
+        src_simple = deps.classes.get(fqcn, _simple(fqcn))
+        src_layer = _layer_of(src_simple)
+        for e in edges:
+            tgt_simple = deps.classes.get(e.target, _simple(e.target))
+            tgt_layer = _layer_of(tgt_simple)
+            key = f"{src_simple}->{tgt_simple}"
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"{src_simple},{tgt_simple},{src_layer},{tgt_layer},{e.kind}")
+    return "\n".join(lines)
+
+
+def render_edges_json(deps: ProjectDeps) -> str:
+    """
+    Экспорт всех связей и классов в JSON.
+
+    Структура:
+    {
+      "package": "com.example",
+      "stats": {"classes": N, "edges": M},
+      "classes": [{"name": "...", "fqcn": "...", "layer": "..."}],
+      "edges": [{"source": "...", "target": "...", "source_layer": "...", "target_layer": "...", "kind": "..."}]
+    }
+    """
+    import json
+
+    classes_list = [
+        {
+            "name": simple,
+            "fqcn": fqcn,
+            "layer": _layer_of(simple),
+        }
+        for fqcn, simple in sorted(deps.classes.items())
+    ]
+
+    edges_list = []
+    seen: Set[str] = set()
+    for fqcn, edges in deps.edges_by_class.items():
+        src_simple = deps.classes.get(fqcn, _simple(fqcn))
+        src_layer = _layer_of(src_simple)
+        for e in edges:
+            tgt_simple = deps.classes.get(e.target, _simple(e.target))
+            tgt_layer = _layer_of(tgt_simple)
+            key = f"{src_simple}->{tgt_simple}"
+            if key in seen:
+                continue
+            seen.add(key)
+            edges_list.append({
+                "source": src_simple,
+                "target": tgt_simple,
+                "source_layer": src_layer,
+                "target_layer": tgt_layer,
+                "kind": e.kind,
+            })
+
+    data = {
+        "package": deps.package_prefix,
+        "stats": {
+            "classes": len(deps.classes),
+            "edges": len(edges_list),
+        },
+        "classes": classes_list,
+        "edges": edges_list,
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
 __all__ = [
     "ProjectDeps",
     "build_project_deps",
     "render_full_tree",
     "render_layered_view",
     "render_mermaid",
+    "render_edges_csv",
+    "render_edges_json",
 ]
