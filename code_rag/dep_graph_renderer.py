@@ -47,12 +47,13 @@ _ANNOTATION_NOISE = frozenset({
 # Слои: (название, суффиксы имён классов)
 _LAYERS: List[Tuple[str, Tuple[str, ...]]] = [
     ("Controller",  ("Controller",)),
-    ("Service",     ("Service",)),
-    ("Repository",  ("Repository",)),
-    ("Model",       ("Entity", "Model")),
+    ("Servlet",     ("Servlet", "Fwd", "Filter")),
+    ("Service",     ("Service", "ServiceImpl")),
+    ("Repository",  ("Repository", "Dao", "DAO")),
+    ("Model",       ("Entity", "Model", "Bean")),
     ("DTO",         ("Dto", "Request", "Response")),
     ("Exception",   ("Exception",)),
-    ("Config",      ("Config", "Configuration", "Handler", "Advice")),
+    ("Config",      ("Config", "Configuration", "Handler", "Advice", "Util")),
 ]
 
 
@@ -296,10 +297,12 @@ def render_mermaid(deps: ProjectDeps) -> str:
 
     layer_styles = {
         "Controller": "fill:#dae8fc,stroke:#6c8ebf",
+        "Servlet":    "fill:#dae8fc,stroke:#336699",
         "Service":    "fill:#d5e8d4,stroke:#82b366",
         "Repository": "fill:#fff2cc,stroke:#d6b656",
         "Model":      "fill:#f8cecc,stroke:#b85450",
         "DTO":        "fill:#e1d5e7,stroke:#9673a6",
+        "Config":     "fill:#f0f0f0,stroke:#999999",
     }
 
     node_ids: Dict[str, str] = {}
