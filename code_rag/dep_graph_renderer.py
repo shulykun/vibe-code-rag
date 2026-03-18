@@ -51,7 +51,7 @@ _LAYERS: List[Tuple[str, Tuple[str, ...]]] = [
     ("Service",     ("Service", "ServiceImpl")),
     ("Repository",  ("Repository", "Dao", "DAO")),
     ("Model",       ("Entity", "Model", "Bean")),
-    ("DTO",         ("Dto", "Request", "Response")),
+    ("DTO",         ("Dto", "DTO", "Request", "Response", "Mapper")),
     ("Exception",   ("Exception",)),
     ("Config",      ("Config", "Configuration", "Handler", "Advice", "Util")),
 ]
