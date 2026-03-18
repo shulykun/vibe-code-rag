@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
+from .keyword_extractor import extract_keywords, format_keywords_for_embed
+
 
 ChunkKind = Literal["method", "class", "config", "doc"]
 
@@ -98,12 +100,13 @@ class Chunker:
             javadoc: Optional[str],
         ) -> str:
             """
-            Строит текст для эмбеддинга: контекст + javadoc + код.
+            Строит текст для эмбеддинга: контекст + javadoc + keywords + код.
 
             Формат:
               // Class: RentalService
               // Method: returnBike
               // Doc: Возвращает велосипед и закрывает аренду...
+              // Keywords: rental status available, transactional, bike not available exception
               <код>
             """
             header_lines = []
@@ -114,6 +117,12 @@ class Chunker:
             if javadoc:
                 doc_short = javadoc[:300].rstrip()
                 header_lines.append(f"// Doc: {doc_short}")
+            # Keyword extraction — только для методов (класс-чанки слишком большие)
+            if kind == "method":
+                kws = extract_keywords(code)
+                kw_line = format_keywords_for_embed(kws)
+                if kw_line:
+                    header_lines.append(kw_line)
             header = "\n".join(header_lines)
             return f"{header}\n{code}" if header else code
 
