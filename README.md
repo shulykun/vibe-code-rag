@@ -1,101 +1,156 @@
-# code-rag MCP tool
+# code-rag lite — Java Dependency Tree via MCP
 
-Модуль Retrieval-Augmented Generation (RAG) для Java-проектов.
+Облегчённый MCP-инструмент для визуализации архитектуры Java-проекта.
 
-Это Python-библиотека и MCP-сервер, который:
-- индексирует структуру Java-проекта (Maven/Gradle, multi-module);
-- строит семантические чанки кода (tree-sitter);
-- строит граф зависимостей (class-level + method-level);
-- выполняет семантический поиск и RAG-запросы через GigaChat Embeddings.
+**Не требует:** эмбеддингов, GigaChat API, Qdrant, ChromaDB, numpy.  
+**Работает:** мгновенно, только статический анализ AST через tree-sitter.
+
+> Полная версия с семантическим поиском (RAG + GigaChat) — ветка [`master`](https://github.com/shulykun/vibe-code-rag/tree/master).
+
+---
+
+## Что умеет
+
+Анализирует Java-проект и строит граф зависимостей между классами:
+
+- Группирует по архитектурным слоям (Controller / Service / Repository / DTO / Exception)
+- Показывает потоки между слоями
+- Фильтрует внешние зависимости (JDK, Spring, Lombok и т.д.)
+- Три формата вывода: таблица, полное дерево, Mermaid-граф
+
+### Пример вывода (`--format layered`)
+
+```
+# Архитектурные слои: bike-rental-service
+
+| Controller         | Service         | Repository         | DTO           |
+| ---                | ---             | ---                | ---           |
+| RentalController   | RentalService   | RentalRepository   | RentalResponse|
+| BikeController     | BikeService     | BikeRepository     | BikeDto       |
+| CustomerController | DiscountService | CustomerRepository | CustomerDto   |
+
+## Потоки между слоями
+- RentalService [Service] → RentalRepository [Repository]
+- RentalService [Service] → DiscountService [Service]
+- BikeController [Controller] → BikeService [Service]
+```
+
+---
 
 ## Установка
 
 ```bash
+git clone -b lite/dependency-tree https://github.com/shulykun/vibe-code-rag
+cd vibe-code-rag
+
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Настройка GigaChat Embeddings
-
-Для семантического поиска используется [GigaChat API](https://developers.sber.ru/portal/products/gigachat).
-
-1. Зарегистрируйтесь на [developers.sber.ru](https://developers.sber.ru/portal/products/gigachat)
-2. Создайте проект, скопируйте **Authorization Key** (base64)
-3. Задайте переменную окружения:
-
-```bash
-export GIGACHAT_AUTH_KEY="ваш_authorization_key"
-
-# Опционально (по умолчанию GIGACHAT_API_PERS):
-export GIGACHAT_SCOPE="GIGACHAT_API_PERS"
-
-# Если нужно отключить проверку SSL (самоподписанный сертификат Sber):
-export GIGACHAT_VERIFY_SSL=false
+**Зависимости** (всего 3):
+```
+tree-sitter==0.21.3
+tree-sitter-languages==1.10.2
+mcp
 ```
 
-Без `GIGACHAT_AUTH_KEY` индексатор автоматически переключается на локальный детерминированный fallback (для тестов/разработки без API).
+---
 
-## Запуск MCP-сервера
+## CLI
 
 ```bash
-# stdio транспорт (для Claude Desktop / Cursor / Continue)
+# Таблица по слоям (по умолчанию)
+python -m code_rag deps /path/to/java-project
+
+# Полное дерево: каждый класс со списком зависимостей
+python -m code_rag deps /path/to/java-project --format full
+
+# Mermaid-граф (для GitHub README / Obsidian)
+python -m code_rag deps /path/to/java-project --format mermaid
+
+# Все три формата сразу
+python -m code_rag deps /path/to/java-project --format all
+```
+
+---
+
+## MCP-сервер
+
+Запуск (stdio транспорт):
+
+```bash
 python -m code_rag mcp
 ```
 
 ### Подключение к Claude Desktop
 
-В `claude_desktop_config.json`:
+`claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "code-rag": {
-      "command": "python",
+    "code-rag-lite": {
+      "command": "/path/to/.venv/bin/python",
       "args": ["-m", "code_rag", "mcp"],
-      "cwd": "/path/to/vibe-code-rag",
-      "env": {
-        "GIGACHAT_AUTH_KEY": "ваш_ключ",
-        "GIGACHAT_VERIFY_SSL": "false"
-      }
+      "cwd": "/path/to/vibe-code-rag"
     }
   }
 }
 ```
 
-## CLI-использование
+### MCP-инструмент
 
-```bash
-# Индексация проекта
-python -m code_rag index /path/to/java-project
+**`dependency_tree`**
 
-# Семантический поиск
-python -m code_rag project-query /path/to/java-project "user authentication flow"
-
-# Текстовый поиск с фильтром
-python -m code_rag search-code /path/to/java-project "@Transactional" --class-filter "*Service"
+```
+dependency_tree(root_path, format="layered")
 ```
 
-## MCP-инструменты
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `root_path` | string | Путь к корню проекта (с `pom.xml` или `build.gradle`) |
+| `format` | string | `layered` \| `full` \| `mermaid` \| `all` |
 
-| Tool | Описание |
-|------|----------|
-| `index_project_tool` | Индексирует Java-проект |
-| `project_query_tool` | Семантический поиск по проекту |
-| `search_code` | Текстовый поиск по чанкам |
-| `analyze_impact` | Анализ влияния изменения класса/метода |
+Возвращает:
+```json
+{
+  "markdown": "# Архитектурные слои: ...",
+  "stats": {
+    "classes": 39,
+    "edges": 66,
+    "package_prefix": "com.bikerental",
+    "layers": { "Controller": 4, "Service": 6, "Repository": 5 }
+  }
+}
+```
+
+---
+
+## Поддерживаемые проекты
+
+| Признак | Поддержка |
+|---------|-----------|
+| Maven (`pom.xml`) | ✅ |
+| Gradle (`build.gradle`, `build.gradle.kts`) | ✅ |
+| Multi-module | ✅ |
+| Lombok (`@Data`, `@Builder` и т.д.) | ✅ корректно игнорируется |
+| Кириллица в Javadoc | ✅ не ломает парсер |
+| Kotlin | ❌ |
+
+---
 
 ## Структура проекта
 
-- `code_rag/`
-  - `project_scanner.py` — поиск модулей и исходников
-  - `code_parser.py` — парсинг Java-кода (tree-sitter)
-  - `chunker.py` — формирование семантических чанков
-  - `dependency_graph.py` — граф зависимостей
-  - `dependency_extractor.py` — извлечение типов и вызовов методов
-  - `embedding_store.py` — InMemory и Chroma векторные сторы
-  - `embeddings_client.py` — GigaChat OAuth2 клиент
-  - `retriever.py` — семантический поиск
-  - `rag_orchestrator.py` — RAG-пайплайн
-  - `mcp_server.py` — MCP-сервер (FastMCP, stdio)
-- `tests/` — pytest-тесты (22 теста)
+```
+code_rag/
+  __main__.py          — CLI (deps / mcp)
+  mcp_server.py        — MCP-сервер (FastMCP, stdio)
+  dep_graph_renderer.py — граф зависимостей и рендеринг
+  dependency_extractor.py — извлечение типов и вызовов из AST
+  dependency_graph.py  — структура графа
+  code_parser.py       — парсинг Java через tree-sitter
+  chunker.py           — чанки по классам/методам
+  project_scanner.py   — поиск модулей и исходников
+tests/                 — 22 pytest-теста
+```
