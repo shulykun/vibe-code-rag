@@ -7,3 +7,7 @@ pydantic
 chromadb
 mcp
 pytest
+
+# Опционально: локальные эмбеддинги (без API)
+# pip install sentence-transformers
+# Затем: export CODE_RAG_LOCAL_MODEL="jinaai/jina-embeddings-v2-base-code"

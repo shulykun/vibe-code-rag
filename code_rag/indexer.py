@@ -29,6 +29,7 @@ from .persistent_store import PersistentEmbeddingStore
 from .retriever import Retriever, RetrievalResult
 from .rag_orchestrator import RagOrchestrator, RagContext
 from .embeddings_client import GigaChatEmbeddingsClient
+from .local_embeddings import LocalEmbeddingsClient, is_local_mode
 from .dependency_graph import DependencyGraph
 from .dependency_extractor import (
     extract_java_symbols,
@@ -38,7 +39,7 @@ from .dependency_extractor import (
 )
 
 
-EMBEDDING_DIM = 1024  # GigaChat Embeddings dimension
+EMBEDDING_DIM = 1024  # GigaChat Embeddings dimension (overridden for local models)
 
 
 log = logging.getLogger(__name__)
@@ -56,8 +57,8 @@ class IndexedProject:
         return Retriever(self.store)
 
 
-def _local_embed(text: str) -> Vector:
-    """Детерминированный локальный эмбеддинг (fallback без API)."""
+def _deterministic_embed(text: str) -> Vector:
+    """Детерминированный псевдо-эмбеддинг (fallback без любого API)."""
     import hashlib
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     seed = int.from_bytes(digest[:4], "big", signed=False)
@@ -66,19 +67,43 @@ def _local_embed(text: str) -> Vector:
     return vec / (np.linalg.norm(vec) + 1e-8)
 
 
-def _embed_texts(texts: Sequence[str], client: GigaChatEmbeddingsClient | None = None) -> List[Vector]:
+def _embed_texts(
+    texts: Sequence[str],
+    client: GigaChatEmbeddingsClient | LocalEmbeddingsClient | None = None,
+) -> List[Vector]:
     """
-    Получает эмбеддинги через GigaChat API батчами.
-    Каждый батч, на который API вернул ошибку, переходит на локальный fallback.
-    """
-    if client is None:
-        try:
-            client = GigaChatEmbeddingsClient.from_env()
-        except Exception:
-            client = None
+    Получает эмбеддинги. Порядок выбора провайдера:
 
+    1. Явно переданный client (тесты)
+    2. CODE_RAG_LOCAL_MODEL → LocalEmbeddingsClient (sentence-transformers)
+    3. GIGACHAT_AUTH_KEY → GigaChatEmbeddingsClient
+    4. Детерминированный fallback (для разработки без API)
+    """
     if client is None:
-        return [_local_embed(t) for t in texts]
+        if is_local_mode():
+            try:
+                client = LocalEmbeddingsClient.from_env()
+                log.info("Using local embeddings: %s", client.model_name)
+            except Exception as e:
+                log.warning("LocalEmbeddingsClient failed: %s", e)
+                client = None
+        else:
+            try:
+                client = GigaChatEmbeddingsClient.from_env()
+            except Exception:
+                client = None
+
+    # Локальный клиент — батчинг встроен в encode()
+    if isinstance(client, LocalEmbeddingsClient):
+        try:
+            return client.embed_texts(texts)
+        except Exception as e:
+            log.warning("Local embedding failed, using deterministic fallback: %s", e)
+            return [_deterministic_embed(t) for t in texts]
+
+    # GigaChat — батчинг с per-batch fallback при 413
+    if client is None:
+        return [_deterministic_embed(t) for t in texts]
 
     # Батчинг: для каждого батча пробуем API, при ошибке — fallback только для него
     texts_list = list(texts)
