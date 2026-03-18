@@ -62,6 +62,13 @@ class ProjectScanner:
             java_test = module_root / "src" / "test" / "java"
             resources = module_root / "src" / "main" / "resources"
 
+            # Fallback для нестандартных структур:
+            # src/com/... (без main/java) — типично для старых Maven/Eclipse проектов
+            if not java_main.exists():
+                alt_src = module_root / "src"
+                if alt_src.exists() and any(alt_src.rglob("*.java")):
+                    java_main = alt_src
+
             modules.append(
                 SourceSet(
                     module_name=module_name,

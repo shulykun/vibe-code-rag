@@ -100,7 +100,24 @@ def main() -> None:
         "--format", choices=["layered", "full", "mermaid", "all"],
         default="layered", help="Output format (default: layered)"
     )
-    p_deps.set_defaults(func=lambda a: print(mcp_dependency_tree(a.root, a.format)["markdown"]))
+    p_deps.add_argument(
+        "--export", action="store_true",
+        help="Save result to DEPENDENCY_TREE.md in project root"
+    )
+    p_deps.add_argument(
+        "--output", type=str, default="DEPENDENCY_TREE.md",
+        help="Output filename when --export is used"
+    )
+
+    def cmd_deps(a: argparse.Namespace) -> None:
+        result = mcp_dependency_tree(a.root, a.format, export=a.export, output_file=a.output)
+        print(result["markdown"])
+        s = result["stats"]
+        print(f"\n---\n_Классов: {s['classes']} | Связей: {s['edges']} | Пакет: {s['package_prefix']}_")
+        if result["exported_to"]:
+            print(f"\n✅ Сохранено: {result['exported_to']}")
+
+    p_deps.set_defaults(func=cmd_deps)
 
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Run MCP server (stdio transport)")

@@ -192,16 +192,22 @@ def search_code(
     return results
 
 
+_DEP_TREE_OUTPUT_FILENAME = "DEPENDENCY_TREE.md"
+
+
 @mcp.tool()
 def dependency_tree(
     root_path: str,
     format: str = "layered",
+    export: bool = False,
+    output_file: str = _DEP_TREE_OUTPUT_FILENAME,
 ) -> Dict[str, Any]:
     """
     Строит граф зависимостей Java-проекта без эмбеддингов.
 
     Работает мгновенно — только статический анализ AST.
     Фильтрует внешние зависимости (JDK, Spring, Lombok и т.д.).
+    Группирует по слоям: Controller / Servlet / Service / Repository / DTO / Exception / Config.
 
     Аргументы:
     - root_path: путь к корню проекта
@@ -210,11 +216,15 @@ def dependency_tree(
         "full"     — каждый класс со списком зависимостей
         "mermaid"  — граф в формате Mermaid для GitHub/Obsidian
         "all"      — все три формата
+    - export: если True — сохранить Markdown в корень проекта
+    - output_file: имя файла (по умолчанию DEPENDENCY_TREE.md)
 
     Возвращает:
     - markdown: готовый Markdown текст
-    - stats: статистика (классов, связей, слоёв)
+    - stats: статистика (классов, связей, слоёв, пакет)
+    - exported_to: путь к файлу если export=True, иначе null
     """
+    import datetime
     from .dep_graph_renderer import build_project_deps, render_full_tree, render_layered_view, render_mermaid
 
     root = Path(root_path)
@@ -240,11 +250,30 @@ def dependency_tree(
     else:
         md = render_layered_view(deps)
 
-    return {"markdown": md, "stats": stats}
+    exported_to = None
+    if export:
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        footer = (
+            f"\n\n---\n\n"
+            f"_Сгенерировано: {ts} · "
+            f"Классов: {stats['classes']} · "
+            f"Связей: {stats['edges']} · "
+            f"Пакет: `{stats['package_prefix']}`_\n"
+        )
+        out_path = root / output_file
+        out_path.write_text(md + footer, encoding="utf-8")
+        exported_to = str(out_path)
+
+    return {"markdown": md, "stats": stats, "exported_to": exported_to}
 
 
-def mcp_dependency_tree(root_path: str, format: str = "layered") -> Dict[str, Any]:
-    return dependency_tree(root_path, format)
+def mcp_dependency_tree(
+    root_path: str,
+    format: str = "layered",
+    export: bool = False,
+    output_file: str = _DEP_TREE_OUTPUT_FILENAME,
+) -> Dict[str, Any]:
+    return dependency_tree(root_path, format, export, output_file)
 
 
 @mcp.tool()
