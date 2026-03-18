@@ -21,10 +21,15 @@ from .dep_graph_renderer import build_project_deps, render_full_tree, render_lay
 mcp = FastMCP("code-rag-lite")
 
 
+OUTPUT_FILENAME = "DEPENDENCY_TREE.md"
+
+
 @mcp.tool()
 def dependency_tree(
     root_path: str,
     format: str = "layered",
+    export: bool = False,
+    output_file: str = OUTPUT_FILENAME,
 ) -> Dict[str, Any]:
     """
     Строит граф зависимостей Java-проекта без эмбеддингов.
@@ -40,10 +45,13 @@ def dependency_tree(
         "full"     — каждый класс со списком зависимостей
         "mermaid"  — граф в формате Mermaid для GitHub/Obsidian
         "all"      — все три формата
+    - export: если True — сохранить результат в файл внутри проекта
+    - output_file: имя файла (по умолчанию DEPENDENCY_TREE.md в корне проекта)
 
     Возвращает:
     - markdown: готовый Markdown текст
     - stats: статистика (классов, связей, слоёв, пакет)
+    - exported_to: путь к файлу если export=True, иначе null
     """
     root = Path(root_path)
     deps = build_project_deps(root)
@@ -68,12 +76,37 @@ def dependency_tree(
     else:
         md = render_layered_view(deps)
 
-    return {"markdown": md, "stats": stats}
+    exported_to = None
+    if export:
+        out_path = root / output_file
+        out_path.write_text(_add_footer(md, stats), encoding="utf-8")
+        exported_to = str(out_path)
+
+    return {"markdown": md, "stats": stats, "exported_to": exported_to}
 
 
-def mcp_dependency_tree(root_path: str, format: str = "layered") -> Dict[str, Any]:
+def _add_footer(md: str, stats: dict) -> str:
+    """Добавляет метаданные в конец файла."""
+    import datetime
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    footer = (
+        f"\n\n---\n\n"
+        f"_Сгенерировано: {ts} · "
+        f"Классов: {stats['classes']} · "
+        f"Связей: {stats['edges']} · "
+        f"Пакет: `{stats['package_prefix']}`_\n"
+    )
+    return md + footer
+
+
+def mcp_dependency_tree(
+    root_path: str,
+    format: str = "layered",
+    export: bool = False,
+    output_file: str = OUTPUT_FILENAME,
+) -> Dict[str, Any]:
     """Алиас для тестов."""
-    return dependency_tree(root_path, format)
+    return dependency_tree(root_path, format, export, output_file)
 
 
 def main() -> None:

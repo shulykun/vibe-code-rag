@@ -134,6 +134,40 @@ class TestRenderers:
         assert "-->" in md
 
 
+class TestExport:
+
+    def test_export_creates_file(self, layered_project: Path) -> None:
+        result = mcp_dependency_tree(str(layered_project), export=True)
+        assert result["exported_to"] is not None
+        out = Path(result["exported_to"])
+        assert out.exists()
+        assert out.name == "DEPENDENCY_TREE.md"
+        assert out.parent == layered_project
+
+    def test_exported_file_contains_markdown(self, layered_project: Path) -> None:
+        mcp_dependency_tree(str(layered_project), export=True)
+        content = (layered_project / "DEPENDENCY_TREE.md").read_text()
+        assert "OrderService" in content
+        assert "Сгенерировано" in content  # footer
+
+    def test_custom_output_filename(self, layered_project: Path) -> None:
+        result = mcp_dependency_tree(str(layered_project), export=True, output_file="ARCH.md")
+        assert Path(result["exported_to"]).name == "ARCH.md"
+        assert (layered_project / "ARCH.md").exists()
+
+    def test_no_export_by_default(self, layered_project: Path) -> None:
+        result = mcp_dependency_tree(str(layered_project))
+        assert result["exported_to"] is None
+        assert not (layered_project / "DEPENDENCY_TREE.md").exists()
+
+    def test_export_overwrites_existing(self, layered_project: Path) -> None:
+        out = layered_project / "DEPENDENCY_TREE.md"
+        out.write_text("old content")
+        mcp_dependency_tree(str(layered_project), export=True)
+        assert "old content" not in out.read_text()
+        assert "OrderService" in out.read_text()
+
+
 class TestMcpDependencyTree:
 
     def test_returns_markdown_and_stats(self, layered_project: Path) -> None:

@@ -15,14 +15,21 @@ CLI для облегчённого code-rag (только dependency_tree).
 
 import argparse
 
-from .mcp_server import mcp_dependency_tree, main as mcp_main
+from .mcp_server import mcp_dependency_tree, OUTPUT_FILENAME, main as mcp_main
 
 
 def cmd_deps(args: argparse.Namespace) -> None:
-    result = mcp_dependency_tree(args.root, args.format)
+    result = mcp_dependency_tree(
+        args.root,
+        format=args.format,
+        export=args.export,
+        output_file=args.output,
+    )
     print(result["markdown"])
     stats = result["stats"]
     print(f"\n---\n_Классов: {stats['classes']} | Связей: {stats['edges']} | Пакет: {stats['package_prefix']}_")
+    if result["exported_to"]:
+        print(f"\n✅ Сохранено: {result['exported_to']}")
 
 
 def main() -> None:
@@ -35,6 +42,14 @@ def main() -> None:
     p_deps.add_argument(
         "--format", choices=["layered", "full", "mermaid", "all"],
         default="layered", help="Output format (default: layered)"
+    )
+    p_deps.add_argument(
+        "--export", action="store_true",
+        help=f"Save result to file inside the project (default: {OUTPUT_FILENAME})"
+    )
+    p_deps.add_argument(
+        "--output", type=str, default=OUTPUT_FILENAME,
+        help=f"Output filename (default: {OUTPUT_FILENAME})"
     )
     p_deps.set_defaults(func=cmd_deps)
 
